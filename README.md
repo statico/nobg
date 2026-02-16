@@ -1,7 +1,7 @@
 # nobg
 
 <p align="center">
-  <img src="banner.png" alt="nobg banner" />
+  <img src="https://statico-misc.s3.amazonaws.com/nobg.png" alt="nobg banner" />
 </p>
 
 Generate images with transparent backgrounds using AI. Uses chroma key compositing — instructs the model to render on a solid green screen background, then replaces it with transparency using [sharp](https://sharp.pixelplumbing.com/).
