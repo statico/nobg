@@ -4,10 +4,10 @@ import { parseArgs } from "util";
 import { resolve, basename } from "path";
 import sharp from "sharp";
 
-const RESOLUTIONS: Record<string, number> = {
-  "1k": 1024,
-  "2k": 2048,
-  "4k": 4096,
+const RESOLUTIONS: Record<string, string> = {
+  "1k": "1K",
+  "2k": "2K",
+  "4k": "4K",
 };
 
 const PROVIDERS: Record<string, (opts: GenerateOpts) => Promise<Buffer>> = {
@@ -18,7 +18,7 @@ interface GenerateOpts {
   model: string;
   prompt: string;
   aspectRatio: string;
-  resolution: number;
+  imageSize: string;
   temperature: number;
   debug: boolean;
 }
@@ -35,7 +35,7 @@ Options:
   -o, --output <file>          Output filename (default: auto-generated)
   -d, --debug                  Log full prompt and API details
   -c, --chroma-color <hex>     Chroma key color (default: #00FF00)
-  -m, --model <provider/model> Model (default: gemini/nano-banana-pro-3)
+  -m, --model <provider/model> Model (default: gemini/gemini-3-pro-image-preview)
   -h, --help                   Show this help
 
 Examples:
@@ -54,7 +54,7 @@ const { values, positionals } = parseArgs({
     output: { type: "string", short: "o" },
     debug: { type: "boolean", short: "d", default: false },
     "chroma-color": { type: "string", short: "c", default: "#00FF00" },
-    model: { type: "string", short: "m", default: "gemini/nano-banana-pro-3" },
+    model: { type: "string", short: "m", default: "gemini/gemini-3-pro-image-preview" },
     help: { type: "boolean", short: "h", default: false },
   },
   allowPositionals: true,
@@ -99,8 +99,8 @@ const chromaB = parseInt(chromaMatch[1].slice(4, 6), 16);
 
 // Parse resolution
 const resKey = values.resolution!.toLowerCase();
-const basePx = RESOLUTIONS[resKey];
-if (!basePx) {
+const imageSize = RESOLUTIONS[resKey];
+if (!imageSize) {
   console.error(
     `Error: unknown resolution "${values.resolution}". Use: ${Object.keys(RESOLUTIONS).join(", ")}`
   );
@@ -136,30 +136,112 @@ const imageBuffer = await generateFn({
   model: modelName,
   prompt: fullPrompt,
   aspectRatio: values["aspect-ratio"]!,
-  resolution: basePx,
+  imageSize,
   temperature,
   debug: values.debug!,
 });
 
-// Chroma key: replace chroma color with transparency
-const TOLERANCE = 40;
+// --- Chroma key removal (HSV-based with spill suppression) ---
+
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const d = max - min;
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  let h = 0;
+  if (d !== 0) {
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  return [h * 360, s * 100, v * 100];
+}
+
 const image = sharp(imageBuffer).ensureAlpha();
 const { data: raw, info } = await image
   .raw()
   .toBuffer({ resolveWithObject: true });
 
-for (let i = 0; i < raw.length; i += 4) {
-  const dr = raw[i] - chromaR;
-  const dg = raw[i + 1] - chromaG;
-  const db = raw[i + 2] - chromaB;
-  const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+// Detect actual background color from corner pixels
+const px = (x: number, y: number) => {
+  const i = (y * info.width + x) * 4;
+  return [raw[i], raw[i + 1], raw[i + 2]] as const;
+};
+const corners = [
+  px(0, 0),
+  px(info.width - 1, 0),
+  px(0, info.height - 1),
+  px(info.width - 1, info.height - 1),
+];
+const bgR = Math.round(corners.reduce((s, c) => s + c[0], 0) / corners.length);
+const bgG = Math.round(corners.reduce((s, c) => s + c[1], 0) / corners.length);
+const bgB = Math.round(corners.reduce((s, c) => s + c[2], 0) / corners.length);
+const [bgH, bgS] = rgbToHsv(bgR, bgG, bgB);
 
-  if (dist < TOLERANCE) {
+// Determine which RGB channel dominates the key color (for spill suppression)
+const bgMax = Math.max(bgR, bgG, bgB);
+const spillChannel = bgR === bgMax ? 0 : bgG === bgMax ? 1 : 2;
+const otherChannels = [0, 1, 2].filter((c) => c !== spillChannel) as [number, number];
+
+if (values.debug) {
+  console.log(`--- Detected background: RGB(${bgR}, ${bgG}, ${bgB}) HSV(${bgH.toFixed(1)}, ${bgS.toFixed(1)}) ---`);
+}
+
+const HUE_RANGE = 35;
+const MIN_SAT = 20;
+const EDGE_HUE_RANGE = 55;
+
+function hueDist(h1: number, h2: number): number {
+  const d = Math.abs(h1 - h2);
+  return d > 180 ? 360 - d : d;
+}
+
+for (let i = 0; i < raw.length; i += 4) {
+  const [h, s, v] = rgbToHsv(raw[i], raw[i + 1], raw[i + 2]);
+  const hd = hueDist(h, bgH);
+
+  if (hd <= HUE_RANGE && s >= MIN_SAT) {
+    // Core background — fully transparent
     raw[i + 3] = 0;
-  } else if (dist < TOLERANCE * 2) {
-    // Feather edges for smoother cutout
-    const alpha = Math.round(((dist - TOLERANCE) / TOLERANCE) * 255);
+  } else if (hd <= EDGE_HUE_RANGE && s >= MIN_SAT * 0.5) {
+    // Edge zone — graduated alpha + spill suppression
+    const t = (hd - HUE_RANGE) / (EDGE_HUE_RANGE - HUE_RANGE);
+    const alpha = Math.round(Math.pow(t, 1.5) * 255);
     raw[i + 3] = Math.min(raw[i + 3], alpha);
+
+    // Spill suppression: clamp dominant channel to max of the other two
+    const cap = Math.max(raw[i + otherChannels[0]], raw[i + otherChannels[1]]);
+    raw[i + spillChannel] = Math.min(raw[i + spillChannel], cap);
+  }
+}
+
+// Morphological erode: expand transparency by 1px to catch anti-aliased fringe
+const w = info.width, h2 = info.height;
+const alphaCopy = new Uint8Array(w * h2);
+for (let y = 0; y < h2; y++)
+  for (let x = 0; x < w; x++)
+    alphaCopy[y * w + x] = raw[(y * w + x) * 4 + 3];
+
+for (let y = 1; y < h2 - 1; y++) {
+  for (let x = 1; x < w - 1; x++) {
+    // If any neighbor is fully transparent, reduce this pixel's alpha
+    const neighbors = [
+      alphaCopy[(y - 1) * w + x],
+      alphaCopy[(y + 1) * w + x],
+      alphaCopy[y * w + x - 1],
+      alphaCopy[y * w + x + 1],
+    ];
+    const minNeighbor = Math.min(...neighbors);
+    if (minNeighbor === 0) {
+      const idx = (y * w + x) * 4 + 3;
+      raw[idx] = Math.min(raw[idx], Math.round(raw[idx] * 0.3));
+      // Spill suppress fringe pixels too
+      const cap = Math.max(raw[idx - 3 + otherChannels[0]], raw[idx - 3 + otherChannels[1]]);
+      raw[idx - 3 + spillChannel] = Math.min(raw[idx - 3 + spillChannel], cap);
+    }
   }
 }
 
@@ -202,9 +284,12 @@ async function generateGemini(opts: GenerateOpts): Promise<Buffer> {
   const body = {
     contents: [{ parts: [{ text: opts.prompt }] }],
     generationConfig: {
-      responseModalities: ["IMAGE"],
+      responseModalities: ["TEXT", "IMAGE"],
       temperature: opts.temperature,
-      aspectRatio: opts.aspectRatio,
+      imageConfig: {
+        aspectRatio: opts.aspectRatio,
+        imageSize: opts.imageSize,
+      },
     },
   };
 
