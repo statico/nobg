@@ -15,6 +15,11 @@ const PROVIDERS: Record<string, (opts: GenerateOpts) => Promise<Buffer>> = {
   gemini: generateGemini,
 };
 
+interface InputImage {
+  mimeType: string;
+  data: string; // base64
+}
+
 interface GenerateOpts {
   model: string;
   prompt: string;
@@ -22,6 +27,7 @@ interface GenerateOpts {
   imageSize: string;
   temperature: number;
   debug: boolean;
+  inputImages: InputImage[];
 }
 
 function usage(): never {
@@ -33,6 +39,7 @@ Options:
   -a, --aspect-ratio <ratio>   Aspect ratio (default: 1:1)
   -r, --resolution <res>       Resolution: 1k, 2k, 4k (default: 1k)
   -t, --temperature <temp>     Temperature 0.0-2.0 (default: 1.0)
+  -i, --input <file>           Input image(s) to include with the prompt (repeatable)
   -o, --output <file>          Output filename (default: auto-generated)
   -d, --debug                  Log full prompt and API details
   -c, --chroma-color <hex>     Chroma key color (default: #00FF00)
@@ -42,6 +49,8 @@ Options:
 Examples:
   nobg 'a red apple'
   nobg -a 16:9 -r 2k 'app icon of a banana'
+  nobg -i photo.jpg 'remove the background from this image'
+  nobg -i ref.png 'recreate this in pixel art style'
   nobg -m gemini/nano-banana-pro-3 -o logo.png 'minimalist logo'`);
   process.exit(0);
 }
@@ -52,6 +61,7 @@ const { values, positionals } = parseArgs({
     "aspect-ratio": { type: "string", short: "a", default: "1:1" },
     resolution: { type: "string", short: "r", default: "1k" },
     temperature: { type: "string", short: "t", default: "1.0" },
+    input: { type: "string", short: "i", multiple: true },
     output: { type: "string", short: "o" },
     debug: { type: "boolean", short: "d", default: false },
     "chroma-color": { type: "string", short: "c", default: "#00FF00" },
@@ -133,6 +143,32 @@ if (values.debug) {
   console.log("--------------");
 }
 
+// Load input images
+const MIME_TYPES: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+const inputImages: InputImage[] = [];
+for (const file of values.input ?? []) {
+  const path = resolve(file);
+  if (!existsSync(path)) {
+    console.error(`Error: input file not found: ${file}`);
+    process.exit(1);
+  }
+  const ext = extname(path).toLowerCase();
+  const mimeType = MIME_TYPES[ext];
+  if (!mimeType) {
+    console.error(`Error: unsupported image format "${ext}". Use: ${Object.keys(MIME_TYPES).join(", ")}`);
+    process.exit(1);
+  }
+  const data = Buffer.from(await Bun.file(path).arrayBuffer()).toString("base64");
+  inputImages.push({ mimeType, data });
+}
+
 // Generate image
 const imageBuffer = await generateFn({
   model: modelName,
@@ -141,6 +177,7 @@ const imageBuffer = await generateFn({
   imageSize,
   temperature,
   debug: values.debug!,
+  inputImages,
 });
 
 // --- Chroma key removal (HSV-based with spill suppression) ---
@@ -328,8 +365,13 @@ async function generateGemini(opts: GenerateOpts): Promise<Buffer> {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${opts.model}:generateContent?key=${apiKey}`;
 
+  const parts: any[] = opts.inputImages.map((img) => ({
+    inlineData: { mimeType: img.mimeType, data: img.data },
+  }));
+  parts.push({ text: opts.prompt });
+
   const body = {
-    contents: [{ parts: [{ text: opts.prompt }] }],
+    contents: [{ parts }],
     generationConfig: {
       responseModalities: ["TEXT", "IMAGE"],
       temperature: opts.temperature,
