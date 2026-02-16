@@ -15,17 +15,17 @@ export GEMINI_API_KEY=your-key-here
 ```
 
 ```sh
-bunx nobg [options] <prompt>
+bunx nobg@latest [options] <prompt>
 ```
 
 ### Examples
 
 ```sh
-bunx nobg 'a red apple'
-bunx nobg -a 16:9 -r 2k 'app icon of a banana'
-bunx nobg -i photo.jpg 'remove the background from this image'
-bunx nobg -i ref.png 'recreate this in pixel art style'
-bunx nobg -o logo.png 'minimalist logo'
+bunx nobg@latest 'a red apple'
+bunx nobg@latest -a 16:9 -r 2k 'app icon of a banana'
+bunx nobg@latest -i photo.jpg 'remove the background from this image'
+bunx nobg@latest -i ref.png 'recreate this in pixel art style'
+bunx nobg@latest -o logo.png 'minimalist logo'
 ```
 
 ### Options
