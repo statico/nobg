@@ -372,12 +372,12 @@ async function generateGemini(opts: GenerateOpts): Promise<Buffer> {
 
   const body = {
     contents: [{ parts }],
-    generationConfig: {
-      responseModalities: ["TEXT", "IMAGE"],
+    generation_config: {
+      response_modalities: ["TEXT", "IMAGE"],
       temperature: opts.temperature,
-      imageConfig: {
-        aspectRatio: opts.aspectRatio,
-        imageSize: opts.imageSize,
+      image_config: {
+        aspect_ratio: opts.aspectRatio,
+        image_size: opts.imageSize,
       },
     },
   };
