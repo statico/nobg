@@ -2,11 +2,7 @@
 
 Generate images with transparent backgrounds using AI. Uses chroma key compositing — instructs the model to render on a solid green screen background, then replaces it with transparency using [sharp](https://sharp.pixelplumbing.com/).
 
-## Setup
-
-```sh
-bun install
-```
+## Usage
 
 Set your API key:
 
@@ -14,18 +10,16 @@ Set your API key:
 export GEMINI_API_KEY=your-key-here
 ```
 
-## Usage
-
 ```sh
-bun nobg.ts [options] <prompt>
+bunx nobg [options] <prompt>
 ```
 
 ### Examples
 
 ```sh
-bun nobg.ts 'a red apple'
-bun nobg.ts -a 16:9 -r 2k 'app icon of a banana'
-bun nobg.ts -o logo.png 'minimalist logo'
+bunx nobg 'a red apple'
+bunx nobg -a 16:9 -r 2k 'app icon of a banana'
+bunx nobg -o logo.png 'minimalist logo'
 ```
 
 ### Options

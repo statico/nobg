@@ -1,8 +1,11 @@
 {
   "name": "nobg",
+  "version": "1.0.0",
   "module": "nobg.ts",
   "type": "module",
-  "private": true,
+  "bin": {
+    "nobg": "nobg.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
