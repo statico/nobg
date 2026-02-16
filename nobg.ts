@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from "util";
-import { resolve, basename } from "path";
+import { resolve, basename, extname } from "path";
+import { existsSync } from "fs";
 import sharp from "sharp";
 
 const RESOLUTIONS: Record<string, string> = {
@@ -92,10 +93,11 @@ if (!chromaMatch) {
   );
   process.exit(1);
 }
-const chromaHex = `#${chromaMatch[1].toUpperCase()}`;
-const chromaR = parseInt(chromaMatch[1].slice(0, 2), 16);
-const chromaG = parseInt(chromaMatch[1].slice(2, 4), 16);
-const chromaB = parseInt(chromaMatch[1].slice(4, 6), 16);
+const chromaHexStr = chromaMatch[1]!;
+const chromaHex = `#${chromaHexStr.toUpperCase()}`;
+const chromaR = parseInt(chromaHexStr.slice(0, 2), 16);
+const chromaG = parseInt(chromaHexStr.slice(2, 4), 16);
+const chromaB = parseInt(chromaHexStr.slice(4, 6), 16);
 
 // Parse resolution
 const resKey = values.resolution!.toLowerCase();
@@ -168,7 +170,7 @@ const { data: raw, info } = await image
 // Detect actual background color from corner pixels
 const px = (x: number, y: number) => {
   const i = (y * info.width + x) * 4;
-  return [raw[i], raw[i + 1], raw[i + 2]] as const;
+  return [raw[i]!, raw[i + 1]!, raw[i + 2]!] as const;
 };
 const corners = [
   px(0, 0),
@@ -176,9 +178,9 @@ const corners = [
   px(0, info.height - 1),
   px(info.width - 1, info.height - 1),
 ];
-const bgR = Math.round(corners.reduce((s, c) => s + c[0], 0) / corners.length);
-const bgG = Math.round(corners.reduce((s, c) => s + c[1], 0) / corners.length);
-const bgB = Math.round(corners.reduce((s, c) => s + c[2], 0) / corners.length);
+const bgR = Math.round(corners.reduce((s, c) => s + (c[0] ?? 0), 0) / corners.length);
+const bgG = Math.round(corners.reduce((s, c) => s + (c[1] ?? 0), 0) / corners.length);
+const bgB = Math.round(corners.reduce((s, c) => s + (c[2] ?? 0), 0) / corners.length);
 const [bgH, bgS] = rgbToHsv(bgR, bgG, bgB);
 
 // Determine which RGB channel dominates the key color (for spill suppression)
@@ -200,7 +202,7 @@ function hueDist(h1: number, h2: number): number {
 }
 
 for (let i = 0; i < raw.length; i += 4) {
-  const [h, s, v] = rgbToHsv(raw[i], raw[i + 1], raw[i + 2]);
+  const [h, s, v] = rgbToHsv(raw[i]!, raw[i + 1]!, raw[i + 2]!);
   const hd = hueDist(h, bgH);
 
   if (hd <= HUE_RANGE && s >= MIN_SAT) {
@@ -210,11 +212,11 @@ for (let i = 0; i < raw.length; i += 4) {
     // Edge zone — graduated alpha + spill suppression
     const t = (hd - HUE_RANGE) / (EDGE_HUE_RANGE - HUE_RANGE);
     const alpha = Math.round(Math.pow(t, 1.5) * 255);
-    raw[i + 3] = Math.min(raw[i + 3], alpha);
+    raw[i + 3] = Math.min(raw[i + 3]!, alpha);
 
     // Spill suppression: clamp dominant channel to max of the other two
-    const cap = Math.max(raw[i + otherChannels[0]], raw[i + otherChannels[1]]);
-    raw[i + spillChannel] = Math.min(raw[i + spillChannel], cap);
+    const cap = Math.max(raw[i + otherChannels[0]]!, raw[i + otherChannels[1]]!);
+    raw[i + spillChannel] = Math.min(raw[i + spillChannel]!, cap);
   }
 }
 
@@ -223,24 +225,24 @@ const w = info.width, h2 = info.height;
 const alphaCopy = new Uint8Array(w * h2);
 for (let y = 0; y < h2; y++)
   for (let x = 0; x < w; x++)
-    alphaCopy[y * w + x] = raw[(y * w + x) * 4 + 3];
+    alphaCopy[y * w + x] = raw[(y * w + x) * 4 + 3]!;
 
 for (let y = 1; y < h2 - 1; y++) {
   for (let x = 1; x < w - 1; x++) {
     // If any neighbor is fully transparent, reduce this pixel's alpha
     const neighbors = [
-      alphaCopy[(y - 1) * w + x],
-      alphaCopy[(y + 1) * w + x],
-      alphaCopy[y * w + x - 1],
-      alphaCopy[y * w + x + 1],
+      alphaCopy[(y - 1) * w + x]!,
+      alphaCopy[(y + 1) * w + x]!,
+      alphaCopy[y * w + x - 1]!,
+      alphaCopy[y * w + x + 1]!,
     ];
     const minNeighbor = Math.min(...neighbors);
     if (minNeighbor === 0) {
       const idx = (y * w + x) * 4 + 3;
-      raw[idx] = Math.min(raw[idx], Math.round(raw[idx] * 0.3));
+      raw[idx] = Math.min(raw[idx]!, Math.round(raw[idx]! * 0.3));
       // Spill suppress fringe pixels too
-      const cap = Math.max(raw[idx - 3 + otherChannels[0]], raw[idx - 3 + otherChannels[1]]);
-      raw[idx - 3 + spillChannel] = Math.min(raw[idx - 3 + spillChannel], cap);
+      const cap = Math.max(raw[idx - 3 + otherChannels[0]]!, raw[idx - 3 + otherChannels[1]]!);
+      raw[idx - 3 + spillChannel] = Math.min(raw[idx - 3 + spillChannel]!, cap);
     }
   }
 }
@@ -256,9 +258,18 @@ function slugify(text: string): string {
     .slice(0, 60);
 }
 
-const outputPath = values.output
-  ? resolve(values.output)
-  : resolve(`${slugify(prompt)}.png`);
+function uniquePath(p: string): string {
+  if (!existsSync(p)) return p;
+  const ext = extname(p);
+  const base = p.slice(0, -ext.length);
+  let n = 2;
+  while (existsSync(`${base}-${n}${ext}`)) n++;
+  return `${base}-${n}${ext}`;
+}
+
+const outputPath = uniquePath(
+  values.output ? resolve(values.output) : resolve(`${slugify(prompt)}.png`)
+);
 
 // Rebuild image, trim transparent pixels, save
 await sharp(raw, {
@@ -269,6 +280,42 @@ await sharp(raw, {
   .toFile(outputPath);
 
 console.log(`Saved ${basename(outputPath)}`);
+
+await displayInTerminal(outputPath);
+
+// --- Terminal inline image display ---
+
+async function displayInTerminal(path: string) {
+  const term = process.env.TERM_PROGRAM;
+  const pngData = Buffer.from(await Bun.file(path).arrayBuffer());
+  const b64 = pngData.toString("base64");
+
+  if (term === "iTerm.app") {
+    // iTerm2 inline image protocol
+    const name = Buffer.from(basename(path)).toString("base64");
+    process.stdout.write(
+      `\x1b]1337;File=inline=1;name=${name};size=${pngData.length}:${b64}\x07`
+    );
+    process.stdout.write("\n");
+  } else if (term === "ghostty") {
+    // Kitty graphics protocol (supported by Ghostty)
+    const CHUNK_SIZE = 4096;
+    for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
+      const chunk = b64.slice(i, i + CHUNK_SIZE);
+      const isLast = i + CHUNK_SIZE >= b64.length;
+      if (i === 0) {
+        process.stdout.write(
+          `\x1b_Ga=T,f=100,m=${isLast ? 0 : 1};${chunk}\x1b\\`
+        );
+      } else {
+        process.stdout.write(
+          `\x1b_Gm=${isLast ? 0 : 1};${chunk}\x1b\\`
+        );
+      }
+    }
+    process.stdout.write("\n");
+  }
+}
 
 // --- Provider implementations ---
 
@@ -312,7 +359,7 @@ async function generateGemini(opts: GenerateOpts): Promise<Buffer> {
     process.exit(1);
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const candidate = data.candidates?.[0];
   const imagePart = candidate?.content?.parts?.find(
     (p: any) => p.inlineData
